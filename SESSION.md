@@ -4,15 +4,16 @@
 > Gemini API 기반 마케팅 이미지 생성 채팅 서비스
 
 ## 현재 상태
-- **Phase**: 배포 준비 완료
+- **Phase**: 배포 완료 ✅
 - **마지막 업데이트**: 2026-02-10
+- **URL**: https://gemini-image-chat.fly.dev
 
 ## 작업 요청 로그
 | 일시 | 요청 내용 | 상태 |
 |------|----------|------|
 | 2026-02-10 | Gemini API 연동 마케팅 이미지 채팅 서비스 개발 | ✅ 완료 |
 | 2026-02-10 | 별도 GitHub 레포로 분리 | ✅ 완료 |
-| 2026-02-10 | Fly.io 배포 설정 | ⚠️ 재시도 필요 |
+| 2026-02-10 | Fly.io 배포 | ✅ 완료 |
 
 ## 완료된 작업 상세
 
@@ -43,9 +44,9 @@
   - `entrypoint.sh` - 서버 시작 스크립트
 
 ## 다음 작업 예정
-1. Fly.io 배포 완료
-2. GEMINI_API_KEY secret 설정
-3. 실제 이미지 생성 테스트
+1. GEMINI_API_KEY secret 설정 (`fly secrets set GEMINI_API_KEY=your_key`)
+2. 실제 이미지 생성 테스트
+3. 추가 기능 개선 (이미지 저장, 히스토리 등)
 
 ## 배포 방법
 
@@ -122,5 +123,10 @@ gemini-image-chat/
 - `GEMINI_MODEL` - 모델명 (기본: gemini-2.0-flash-exp)
 - `DATABASE_URL` - SQLite DB 경로 (기본: sqlite+aiosqlite:///./data/image_chat.db)
 
+## 해결된 이슈
+- [x] entrypoint.sh Windows CRLF 줄바꿈 → Unix LF 변환 완료
+- [x] entrypoint.sh shebang: `/bin/bash` → `/bin/sh` (python:3.11-slim 호환)
+- [x] .gitattributes 추가로 향후 줄바꿈 문제 방지
+
 ## 알려진 이슈
-- entrypoint.sh Windows 줄바꿈 문제 수정됨 (2026-02-10)
+- `gemini_configured: false` - Gemini API 키 설정 필요
