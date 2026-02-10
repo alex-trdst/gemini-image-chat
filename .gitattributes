@@ -1,0 +1,12 @@
+# Ensure shell scripts always use LF line endings
+*.sh text eol=lf
+
+# Dockerfile should use LF
+Dockerfile text eol=lf
+
+# Python files
+*.py text eol=lf
+
+# Keep Windows line endings for Windows batch files
+*.bat text eol=crlf
+*.cmd text eol=crlf
