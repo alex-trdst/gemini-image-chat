@@ -15,8 +15,8 @@ RUN uv pip install --system -e .
 COPY src/ ./src/
 COPY entrypoint.sh ./
 
-# Copy frontend build if exists
-COPY static/ ./static/ 2>/dev/null || true
+# Copy frontend build
+COPY static/ ./static/
 
 # Make entrypoint executable
 RUN chmod +x entrypoint.sh
