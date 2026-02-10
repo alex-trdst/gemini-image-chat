@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import type { ImagePurpose, StylePreset } from '../../types/imageChat'
 
 interface ChatInputProps {
   onSendChat: (content: string) => void

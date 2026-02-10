@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { createSession, fetchSessions, deleteSession, fetchPurposes } from '../api/imageChat'
+import { createSession, fetchSessions, deleteSession } from '../api/imageChat'
 import type { ImagePurpose, StylePreset } from '../types/imageChat'
 import PurposeSelector from '../components/image-chat/PurposeSelector'
 import StyleSelector from '../components/image-chat/StyleSelector'
