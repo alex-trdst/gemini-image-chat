@@ -2,6 +2,7 @@
 Gemini Image Service
 
 Google Gemini API를 사용한 마케팅 이미지 생성 서비스
+gemini-3-pro-image-preview (Nano Banana Pro) 모델 사용
 Multi-turn 대화 지원으로 이미지 개선(refine) 가능
 """
 
@@ -40,20 +41,37 @@ class ChatResponse:
     generation_time_ms: int = 0
 
 
-class GeminiImageService:
-    """Gemini 이미지 생성 서비스"""
+# 용도별 aspect ratio 매핑
+PURPOSE_ASPECT_RATIOS = {
+    ImagePurpose.SNS_INSTAGRAM_SQUARE: "1:1",
+    ImagePurpose.SNS_INSTAGRAM_PORTRAIT: "9:16",  # 4:5에 가장 가까운 지원 비율
+    ImagePurpose.SNS_FACEBOOK: "16:9",
+    ImagePurpose.BANNER_WEB: "16:9",
+    ImagePurpose.BANNER_MOBILE: "16:9",
+    ImagePurpose.PRODUCT_SHOWCASE: "1:1",
+    ImagePurpose.EMAIL_HEADER: "16:9",
+    ImagePurpose.CUSTOM: "1:1",
+}
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-preview-image-generation"):
+
+class GeminiImageService:
+    """Gemini 이미지 생성 서비스 (gemini-3-pro-image-preview)"""
+
+    def __init__(self, api_key: str, model: str = "gemini-3-pro-image-preview"):
         """
         Args:
             api_key: Google AI API 키
-            model: 사용할 모델명 (기본: gemini-2.0-flash-exp)
+            model: 사용할 모델명 (기본: gemini-3-pro-image-preview)
         """
         self.client = genai.Client(api_key=api_key)
         self.model = model
 
         # 세션별 채팅 히스토리 저장 (Multi-turn 지원)
         self._chat_sessions: dict[str, list[types.Content]] = {}
+
+    def _get_aspect_ratio(self, purpose: ImagePurpose) -> str:
+        """용도별 aspect ratio 반환"""
+        return PURPOSE_ASPECT_RATIOS.get(purpose, "1:1")
 
     def _build_purpose_prompt(self, purpose: ImagePurpose, base_prompt: str) -> str:
         """용도별 프롬프트 최적화"""
@@ -104,7 +122,7 @@ class GeminiImageService:
         session_id: Optional[str] = None,
     ) -> GeneratedImage:
         """
-        이미지 생성
+        이미지 생성 (gemini-3-pro-image-preview)
 
         Args:
             prompt: 이미지 생성 프롬프트
@@ -122,12 +140,18 @@ class GeminiImageService:
         if style:
             optimized_prompt = self._build_style_prompt(style, optimized_prompt)
 
-        # 이미지 생성 요청
+        # Aspect ratio 설정
+        aspect_ratio = self._get_aspect_ratio(purpose)
+
+        # 이미지 생성 요청 (gemini-3-pro-image-preview 형식)
         response = await self.client.aio.models.generate_content(
             model=self.model,
             contents=optimized_prompt,
             config=types.GenerateContentConfig(
-                response_modalities=["IMAGE", "TEXT"],
+                response_modalities=["TEXT", "IMAGE"],
+                image_config=types.ImageConfig(
+                    aspect_ratio=aspect_ratio,
+                ),
             ),
         )
 
@@ -204,6 +228,9 @@ class GeminiImageService:
         # 개선 요청 추가
         refine_prompt = f"Please modify the previous image based on this feedback: {feedback}"
 
+        # Aspect ratio 설정
+        aspect_ratio = self._get_aspect_ratio(purpose)
+
         # 히스토리와 함께 새 요청
         contents = history + [
             types.Content(
@@ -216,7 +243,10 @@ class GeminiImageService:
             model=self.model,
             contents=contents,
             config=types.GenerateContentConfig(
-                response_modalities=["IMAGE", "TEXT"],
+                response_modalities=["TEXT", "IMAGE"],
+                image_config=types.ImageConfig(
+                    aspect_ratio=aspect_ratio,
+                ),
             ),
         )
 

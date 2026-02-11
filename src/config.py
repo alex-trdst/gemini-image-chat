@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # Gemini API
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash-preview-image-generation"
+    gemini_model: str = "gemini-3-pro-image-preview"
 
     # Database
     database_url: str = "sqlite:///./data/image_chat.db"
