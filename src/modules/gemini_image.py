@@ -43,7 +43,7 @@ class ChatResponse:
 class GeminiImageService:
     """Gemini 이미지 생성 서비스"""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-exp"):
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-preview-image-generation"):
         """
         Args:
             api_key: Google AI API 키
