@@ -15,6 +15,7 @@ from google import genai
 from google.genai import types
 
 from src.schemas.image_chat import IMAGE_PURPOSE_PRESETS, ImagePurpose, StylePreset
+from src.brand_guidelines import get_brand_prompt, get_conversation_guidelines
 
 
 @dataclass
@@ -67,25 +68,10 @@ PURPOSE_ASPECT_RATIOS = {
 class GeminiImageService:
     """Gemini 이미지 생성 서비스 (gemini-3-pro-image-preview)"""
 
-    # TRDST 브랜드 이미지 생성 가이드라인
-    TRDST_BRAND_PROMPT = """Create a premium marketing image for TRDST brand.
-
-TRDST Brand Guidelines:
-- Premium high-end furniture and lighting brand
-- Timeless elegance and sophisticated design
-- Modern luxury with clean lines
-- Warm, inviting atmosphere
-- Professional interior styling
-
-Visual Style Requirements:
-- Neutral, warm color tones (cream, beige, charcoal, gold accents)
-- Clean backgrounds that don't distract from the subject
-- Professional studio or luxury lifestyle setting
-- Subtle shadows and natural lighting effects
-- Minimalist yet luxurious atmosphere
-- High-quality, aspirational imagery
-
-"""
+    # TRDST 브랜드 이미지 생성 가이드라인 (src/brand_guidelines.py에서 수정 가능)
+    @property
+    def TRDST_BRAND_PROMPT(self) -> str:
+        return get_brand_prompt()
 
     def __init__(self, api_key: str, model: str = "gemini-3-pro-image-preview"):
         """
@@ -481,7 +467,10 @@ Always respond in Korean."""
         start_time = time.time()
 
         # 통합 시스템 프롬프트 - AI가 자연스럽게 대화를 이끌고 이미지 생성 시점 결정
-        system_prompt = """You are a creative marketing image consultant and generator for TRDST, a premium furniture and lighting brand.
+        # 브랜드 가이드라인은 src/brand_guidelines.py에서 수정 가능
+        brand_guidelines = get_conversation_guidelines()
+
+        system_prompt = f"""You are a creative marketing image consultant and generator for TRDST, a premium furniture and lighting brand.
 
 ## Your Role
 You help create stunning marketing images through natural conversation:
@@ -501,12 +490,7 @@ Do NOT generate images when:
 - Need more clarification on requirements
 - User is asking questions about possibilities
 
-## TRDST Brand Guidelines
-- Premium, high-end aesthetic
-- Neutral warm tones (cream, beige, charcoal, gold accents)
-- Clean, minimalist yet luxurious
-- Professional studio or lifestyle settings
-- Natural lighting, subtle shadows
+{brand_guidelines}
 
 ## Response Format
 - If NOT generating: Provide helpful text response in Korean
