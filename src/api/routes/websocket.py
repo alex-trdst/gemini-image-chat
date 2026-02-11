@@ -18,7 +18,7 @@ from src.config import get_settings
 from src.modules.gemini_image import GeminiImageService
 from src.modules.shopify_files import ShopifyFilesService
 from src.schemas.image_chat import ContentType, ImagePurpose, MessageRole, StylePreset
-from src.storage.database import async_session_maker
+from src.storage.database import AsyncSessionLocal
 from src.storage.models import GeneratedMarketingImage, ImageChatMessage, ImageChatSession
 
 router = APIRouter(tags=["websocket"])
@@ -157,7 +157,7 @@ async def image_chat_websocket(
                 continue
 
             try:
-                async with async_session_maker() as db:
+                async with AsyncSessionLocal() as db:
                     if msg_type == "chat":
                         # 텍스트 대화
                         await websocket.send_json({
