@@ -31,8 +31,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./data/image_chat.db"
 
-    # Image Storage (optional)
-    image_storage_url: str = ""
+    # Shopify (for image file storage)
+    shopify_store_url: str = ""
+    shopify_access_token: str = ""
 
 
 @lru_cache
