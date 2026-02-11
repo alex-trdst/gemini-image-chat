@@ -2,12 +2,16 @@
 Shopify Files Upload Module
 
 Shopify Admin API를 사용하여 이미지 파일 업로드
+Client Credentials (OAuth) 방식 인증
 """
 
 import base64
 import httpx
+import logging
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -19,18 +23,57 @@ class UploadedFile:
 
 
 class ShopifyFilesService:
-    """Shopify Files API 서비스"""
+    """Shopify Files API 서비스 (Client Credentials 인증)"""
 
-    def __init__(self, store_url: str, access_token: str):
+    def __init__(self, store_url: str, client_id: str, client_secret: str):
         """
         Args:
             store_url: Shopify 스토어 URL (예: https://mystore.myshopify.com)
-            access_token: Shopify Admin API 액세스 토큰
+            client_id: Shopify 앱 Client ID
+            client_secret: Shopify 앱 Client Secret
         """
         self.store_url = store_url.rstrip("/")
-        self.access_token = access_token
+        self.client_id = client_id
+        self.client_secret = client_secret
         self.graphql_url = f"{self.store_url}/admin/api/2024-01/graphql.json"
-        self.headers = {
+        self._access_token: Optional[str] = None
+
+    async def _get_access_token(self) -> str:
+        """Client Credentials로 액세스 토큰 발급"""
+        if self._access_token:
+            return self._access_token
+
+        token_url = f"{self.store_url}/admin/oauth/access_token"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                token_url,
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "grant_type": "client_credentials",
+                },
+                timeout=30.0,
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Shopify 토큰 발급 실패: {response.status_code} - {response.text}")
+                raise ValueError(f"Shopify 토큰 발급 실패: {response.status_code}")
+
+            data = response.json()
+            self._access_token = data.get("access_token")
+
+            if not self._access_token:
+                logger.error(f"Shopify 토큰 응답에 access_token 없음: {data}")
+                raise ValueError("Shopify 토큰 응답에 access_token이 없습니다.")
+
+            logger.info("Shopify 액세스 토큰 발급 성공")
+            return self._access_token
+
+    async def _get_headers(self) -> dict:
+        """인증 헤더 반환"""
+        access_token = await self._get_access_token()
+        return {
             "Content-Type": "application/json",
             "X-Shopify-Access-Token": access_token,
         }
@@ -54,6 +97,8 @@ class ShopifyFilesService:
         Returns:
             UploadedFile: 업로드된 파일 정보 (URL 포함)
         """
+        headers = await self._get_headers()
+
         async with httpx.AsyncClient() as client:
             # Step 1: stagedUploadsCreate로 업로드 URL 받기
             staged_mutation = """
@@ -77,7 +122,7 @@ class ShopifyFilesService:
 
             staged_response = await client.post(
                 self.graphql_url,
-                headers=self.headers,
+                headers=headers,
                 json={
                     "query": staged_mutation,
                     "variables": {
@@ -142,7 +187,7 @@ class ShopifyFilesService:
 
             file_response = await client.post(
                 self.graphql_url,
-                headers=self.headers,
+                headers=headers,
                 json={
                     "query": file_mutation,
                     "variables": {

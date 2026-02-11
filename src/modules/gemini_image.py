@@ -41,6 +41,16 @@ class ChatResponse:
     generation_time_ms: int = 0
 
 
+@dataclass
+class ConversationResponse:
+    """통합 대화 응답 (텍스트와 이미지가 함께 올 수 있음)"""
+
+    text: Optional[str] = None
+    image: Optional[GeneratedImage] = None
+    generation_time_ms: int = 0
+    should_generate: bool = False  # AI가 이미지 생성이 필요하다고 판단했는지
+
+
 # 용도별 aspect ratio 매핑
 PURPOSE_ASPECT_RATIOS = {
     ImagePurpose.SNS_INSTAGRAM_SQUARE: "1:1",
@@ -56,6 +66,26 @@ PURPOSE_ASPECT_RATIOS = {
 
 class GeminiImageService:
     """Gemini 이미지 생성 서비스 (gemini-3-pro-image-preview)"""
+
+    # TRDST 브랜드 이미지 생성 가이드라인
+    TRDST_BRAND_PROMPT = """Create a premium marketing image for TRDST brand.
+
+TRDST Brand Guidelines:
+- Premium high-end furniture and lighting brand
+- Timeless elegance and sophisticated design
+- Modern luxury with clean lines
+- Warm, inviting atmosphere
+- Professional interior styling
+
+Visual Style Requirements:
+- Neutral, warm color tones (cream, beige, charcoal, gold accents)
+- Clean backgrounds that don't distract from the subject
+- Professional studio or luxury lifestyle setting
+- Subtle shadows and natural lighting effects
+- Minimalist yet luxurious atmosphere
+- High-quality, aspirational imagery
+
+"""
 
     def __init__(self, api_key: str, model: str = "gemini-3-pro-image-preview"):
         """
@@ -135,8 +165,11 @@ class GeminiImageService:
         """
         start_time = time.time()
 
+        # TRDST 브랜드 프롬프트 + 사용자 프롬프트
+        branded_prompt = f"{self.TRDST_BRAND_PROMPT}User Request: {prompt}"
+
         # 프롬프트 최적화
-        optimized_prompt = self._build_purpose_prompt(purpose, prompt)
+        optimized_prompt = self._build_purpose_prompt(purpose, branded_prompt)
         if style:
             optimized_prompt = self._build_style_prompt(style, optimized_prompt)
 
@@ -206,6 +239,7 @@ class GeminiImageService:
         session_id: str,
         feedback: str,
         purpose: ImagePurpose,
+        previous_image_url: Optional[str] = None,
     ) -> GeneratedImage:
         """
         이미지 개선 (Multi-turn 대화)
@@ -214,28 +248,57 @@ class GeminiImageService:
             session_id: 세션 ID
             feedback: 개선 피드백
             purpose: 이미지 용도
+            previous_image_url: 이전 이미지 URL (히스토리 없을 때 사용)
 
         Returns:
             GeneratedImage: 개선된 이미지 정보
         """
+        import httpx
+
         start_time = time.time()
 
-        # 기존 히스토리 가져오기
-        history = self._chat_sessions.get(session_id, [])
-        if not history:
-            raise ValueError(f"세션 {session_id}의 히스토리가 없습니다. 먼저 이미지를 생성해주세요.")
+        # 이미지 개선은 항상 이전 이미지를 가져와서 새 요청으로 처리
+        # (Gemini API의 thought_signature 요구사항 때문에 히스토리 사용 불가)
+        previous_image_data = None
+        previous_mime_type = "image/png"
 
-        # 개선 요청 추가
-        refine_prompt = f"Please modify the previous image based on this feedback: {feedback}"
+        if previous_image_url:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(previous_image_url, timeout=30.0)
+                    if response.status_code == 200:
+                        previous_image_data = response.content
+                        content_type = response.headers.get("content-type", "image/png")
+                        previous_mime_type = content_type.split(";")[0].strip()
+            except Exception as e:
+                raise ValueError(f"이전 이미지를 불러오는데 실패했습니다: {e}")
+
+        if not previous_image_data:
+            raise ValueError(f"세션 {session_id}의 이전 이미지를 찾을 수 없습니다. 먼저 이미지를 생성해주세요.")
+
+        # TRDST 브랜드 가이드라인을 유지하면서 개선 요청
+        refine_prompt = f"""Please modify this image based on the feedback while maintaining TRDST brand guidelines:
+- Premium, sophisticated aesthetic
+- Neutral warm tones (cream, beige, charcoal, gold accents)
+- Clean, minimalist yet luxurious atmosphere
+- Professional quality imagery
+
+Feedback: {feedback}"""
 
         # Aspect ratio 설정
         aspect_ratio = self._get_aspect_ratio(purpose)
 
-        # 히스토리와 함께 새 요청
-        contents = history + [
+        # 항상 이미지와 피드백을 함께 새 요청으로 전송 (히스토리 사용 안함)
+        contents = [
             types.Content(
                 role="user",
-                parts=[types.Part(text=refine_prompt)],
+                parts=[
+                    types.Part(inline_data=types.Blob(
+                        mime_type=previous_mime_type,
+                        data=previous_image_data
+                    )),
+                    types.Part(text=refine_prompt),
+                ],
             )
         ]
 
@@ -265,19 +328,8 @@ class GeminiImageService:
 
         generation_time_ms = int((time.time() - start_time) * 1000)
 
-        # 히스토리 업데이트
-        self._chat_sessions[session_id].append(
-            types.Content(
-                role="user",
-                parts=[types.Part(text=refine_prompt)],
-            )
-        )
-        self._chat_sessions[session_id].append(
-            types.Content(
-                role="model",
-                parts=[types.Part(inline_data=types.Blob(mime_type=mime_type, data=image_data))],
-            )
-        )
+        # 이미지 개선은 히스토리를 사용하지 않으므로 별도로 저장하지 않음
+        # (각 개선 요청은 DB에서 이전 이미지를 가져와 독립적으로 처리)
 
         preset = IMAGE_PURPOSE_PRESETS.get(purpose, {})
 
@@ -398,3 +450,219 @@ Always respond in Korean."""
     def get_session_history_length(self, session_id: str) -> int:
         """세션 히스토리 길이 반환"""
         return len(self._chat_sessions.get(session_id, []))
+
+    async def converse(
+        self,
+        session_id: str,
+        message: str,
+        purpose: ImagePurpose,
+        style: Optional[StylePreset] = None,
+        previous_image_url: Optional[str] = None,
+    ) -> ConversationResponse:
+        """
+        통합 대화 - AI가 자연스럽게 대화하며 필요시 이미지 생성
+
+        대화를 통해 아이디어를 구체화하고, AI가 적절한 시점에
+        자동으로 이미지를 생성합니다. Thinking mode를 활용해
+        더 깊은 창의적 사고를 수행합니다.
+
+        Args:
+            session_id: 세션 ID
+            message: 사용자 메시지
+            purpose: 이미지 용도
+            style: 스타일 프리셋 (선택)
+            previous_image_url: 수정할 이전 이미지 URL (선택)
+
+        Returns:
+            ConversationResponse: 텍스트와/또는 이미지 응답
+        """
+        import httpx
+
+        start_time = time.time()
+
+        # 통합 시스템 프롬프트 - AI가 자연스럽게 대화를 이끌고 이미지 생성 시점 결정
+        system_prompt = """You are a creative marketing image consultant and generator for TRDST, a premium furniture and lighting brand.
+
+## Your Role
+You help create stunning marketing images through natural conversation:
+1. **Understand the vision**: Ask clarifying questions about goals, audience, and style
+2. **Develop the concept**: Suggest ideas, discuss compositions, refine details
+3. **Generate when ready**: When the concept is clear enough, generate the image
+
+## When to Generate Images
+Generate an image when:
+- The user explicitly asks to create/generate an image
+- The concept has been discussed and refined enough
+- The user confirms they want to proceed with generation
+- Keywords like "만들어", "생성해", "보여줘", "그려줘" appear
+
+Do NOT generate images when:
+- Still exploring initial ideas
+- Need more clarification on requirements
+- User is asking questions about possibilities
+
+## TRDST Brand Guidelines
+- Premium, high-end aesthetic
+- Neutral warm tones (cream, beige, charcoal, gold accents)
+- Clean, minimalist yet luxurious
+- Professional studio or lifestyle settings
+- Natural lighting, subtle shadows
+
+## Response Format
+- If NOT generating: Provide helpful text response in Korean
+- If generating: Include both explanatory text AND the image
+
+## Image Generation Instructions (when generating)
+When you decide to generate an image, create it following:
+- TRDST brand visual identity
+- The discussed concept and requirements
+- The selected purpose and style settings
+
+Always respond in Korean. Be conversational, creative, and helpful."""
+
+        # 용도/스타일 컨텍스트 추가
+        purpose_hints = {
+            ImagePurpose.SNS_INSTAGRAM_SQUARE: "Instagram 정사각형 포스트용 (1:1)",
+            ImagePurpose.SNS_INSTAGRAM_PORTRAIT: "Instagram 세로형 포스트용 (9:16)",
+            ImagePurpose.SNS_FACEBOOK: "Facebook 피드용 (16:9)",
+            ImagePurpose.BANNER_WEB: "웹 배너용 (16:9 와이드)",
+            ImagePurpose.BANNER_MOBILE: "모바일 배너용 (16:9)",
+            ImagePurpose.PRODUCT_SHOWCASE: "제품 쇼케이스용 (1:1)",
+            ImagePurpose.EMAIL_HEADER: "이메일 헤더용 (16:9)",
+            ImagePurpose.CUSTOM: "커스텀 용도",
+        }
+        style_hints = {
+            StylePreset.MODERN: "모던",
+            StylePreset.MINIMAL: "미니멀",
+            StylePreset.VIBRANT: "비비드",
+            StylePreset.LUXURY: "럭셔리",
+            StylePreset.PLAYFUL: "플레이풀",
+            StylePreset.PROFESSIONAL: "프로페셔널",
+            StylePreset.NATURAL: "자연스러운",
+            StylePreset.TECH: "테크",
+        }
+
+        context_prompt = f"\n\n[Current Settings]\n- Purpose: {purpose_hints.get(purpose, purpose.value)}"
+        if style:
+            context_prompt += f"\n- Style: {style_hints.get(style, style.value)}"
+
+        # 이전 이미지가 있으면 수정 모드
+        previous_image_data = None
+        previous_mime_type = "image/png"
+        if previous_image_url:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(previous_image_url, timeout=30.0)
+                    if response.status_code == 200:
+                        previous_image_data = response.content
+                        content_type = response.headers.get("content-type", "image/png")
+                        previous_mime_type = content_type.split(";")[0].strip()
+                context_prompt += "\n- Mode: 이전 이미지를 기반으로 수정/개선"
+            except Exception as e:
+                # 이미지 로드 실패해도 대화는 계속
+                context_prompt += f"\n- Note: 이전 이미지 로드 실패 ({e})"
+
+        # Aspect ratio
+        aspect_ratio = self._get_aspect_ratio(purpose)
+
+        # 히스토리 가져오기
+        history = self._chat_sessions.get(session_id, [])
+
+        # 요청 구성
+        contents = []
+
+        # 시스템 프롬프트 (첫 메시지로)
+        contents.append(types.Content(
+            role="user",
+            parts=[types.Part(text=system_prompt + context_prompt)]
+        ))
+
+        # 히스토리 추가
+        contents.extend(history)
+
+        # 현재 사용자 메시지 구성
+        user_parts = []
+
+        # 이전 이미지가 있으면 함께 전송 (수정 요청)
+        if previous_image_data:
+            user_parts.append(types.Part(
+                inline_data=types.Blob(
+                    mime_type=previous_mime_type,
+                    data=previous_image_data
+                )
+            ))
+
+        user_parts.append(types.Part(text=message))
+        contents.append(types.Content(role="user", parts=user_parts))
+
+        # Gemini API 호출 - TEXT와 IMAGE 모두 허용
+        # Thinking mode 활성화 (Gemini 3)
+        response = await self.client.aio.models.generate_content(
+            model=self.model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_modalities=["TEXT", "IMAGE"],
+                image_config=types.ImageConfig(
+                    aspect_ratio=aspect_ratio,
+                ),
+                # Thinking mode for deeper reasoning (Gemini 3)
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=2048,  # 적당한 사고 깊이
+                ),
+            ),
+        )
+
+        # 응답 파싱 - 텍스트와 이미지 추출
+        text_response = None
+        image_data = None
+        mime_type = "image/png"
+
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                if text_response:
+                    text_response += "\n" + part.text
+                else:
+                    text_response = part.text
+            elif part.inline_data is not None:
+                image_data = part.inline_data.data
+                mime_type = part.inline_data.mime_type
+
+        generation_time_ms = int((time.time() - start_time) * 1000)
+
+        # 히스토리 업데이트 - 텍스트만 저장 (이미지는 thought_signature 문제로 저장 안함)
+        if session_id not in self._chat_sessions:
+            self._chat_sessions[session_id] = []
+
+        # 사용자 메시지 저장 (텍스트만)
+        self._chat_sessions[session_id].append(
+            types.Content(role="user", parts=[types.Part(text=message)])
+        )
+
+        # 모델 응답 저장 (텍스트만)
+        if text_response:
+            self._chat_sessions[session_id].append(
+                types.Content(role="model", parts=[types.Part(text=text_response)])
+            )
+
+        # 결과 구성
+        result = ConversationResponse(
+            text=text_response,
+            generation_time_ms=generation_time_ms,
+            should_generate=image_data is not None,
+        )
+
+        # 이미지가 생성되었으면 포함
+        if image_data:
+            preset = IMAGE_PURPOSE_PRESETS.get(purpose, {})
+            result.image = GeneratedImage(
+                image_data=image_data,
+                image_base64=base64.b64encode(image_data).decode("utf-8"),
+                mime_type=mime_type,
+                prompt_used=message,
+                model_used=self.model,
+                generation_time_ms=generation_time_ms,
+                width=preset.get("width"),
+                height=preset.get("height"),
+            )
+
+        return result

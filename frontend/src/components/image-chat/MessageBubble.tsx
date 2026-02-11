@@ -10,16 +10,32 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const [showFullscreen, setShowFullscreen] = useState(false)
 
-  const handleDownload = () => {
+  const handleDownload = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation()
+    }
     if (!message.image_url) return
 
-    // Base64 data URL을 다운로드
-    const link = document.createElement('a')
-    link.href = message.image_url
-    link.download = `trdst-image-${Date.now()}.png`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    try {
+      // 이미지를 fetch해서 Blob으로 다운로드 (cross-origin 지원)
+      const response = await fetch(message.image_url)
+      const blob = await response.blob()
+      const blobUrl = URL.createObjectURL(blob)
+
+      const link = document.createElement('a')
+      link.href = blobUrl
+      link.download = `trdst-image-${Date.now()}.png`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+
+      // Blob URL 해제
+      URL.revokeObjectURL(blobUrl)
+    } catch (error) {
+      console.error('다운로드 실패:', error)
+      // 폴백: 새 탭에서 열기
+      window.open(message.image_url, '_blank')
+    }
   }
 
   return (
@@ -91,10 +107,7 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
             />
             <div className="absolute top-4 right-4 flex gap-2">
               <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleDownload()
-                }}
+                onClick={handleDownload}
                 className="px-4 py-2 bg-blue-500 hover:bg-blue-400 text-white rounded-lg transition-colors"
               >
                 ⬇ 다운로드

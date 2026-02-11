@@ -47,12 +47,28 @@ export default function ChatPage() {
 
     setStatusMessage('')
 
-    // 새 메시지 추가
+    // 에러 처리
+    if (response.type === 'error') {
+      // 에러도 메시지로 표시
+      const errorMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        session_id: sessionId!,
+        role: 'assistant',
+        content_type: 'text',
+        text_content: `⚠️ ${response.content}`,
+        tokens_used: 0,
+        created_at: response.timestamp,
+      }
+      setMessages((prev) => [...prev, errorMessage])
+      return
+    }
+
+    // 새 메시지 추가 (텍스트, 이미지, 또는 혼합)
     const newMessage: ChatMessage = {
       id: crypto.randomUUID(),
       session_id: sessionId!,
       role: 'assistant',
-      content_type: response.image_url ? 'image' : 'text',
+      content_type: response.image_url ? (response.content ? 'mixed' : 'image') : 'text',
       text_content: response.content,
       image_url: response.image_url,
       tokens_used: 0,
@@ -64,7 +80,7 @@ export default function ChatPage() {
   }, [sessionId])
 
   // WebSocket 연결
-  const { isConnected, isLoading: wsLoading, sendChat, sendGenerate, sendRefine } =
+  const { isConnected, isLoading: wsLoading, sendConverse } =
     useImageChatWebSocket({
       sessionId: sessionId!,
       onMessage: handleMessage,
@@ -75,8 +91,8 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, statusMessage])
 
-  // 채팅 전송
-  const handleSendChat = useCallback(
+  // 통합 대화 전송
+  const handleSend = useCallback(
     (content: string) => {
       // 사용자 메시지 추가
       const userMessage: ChatMessage = {
@@ -90,52 +106,11 @@ export default function ChatPage() {
       }
       setMessages((prev) => [...prev, userMessage])
 
-      sendChat(content, purpose, style)
+      // 통합 대화 API 호출
+      sendConverse(content, purpose, style)
     },
-    [sessionId, purpose, style, sendChat]
+    [sessionId, purpose, style, sendConverse]
   )
-
-  // 이미지 생성
-  const handleGenerate = useCallback(
-    (prompt: string) => {
-      // 사용자 메시지 추가
-      const userMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        session_id: sessionId!,
-        role: 'user',
-        content_type: 'text',
-        text_content: `[이미지 생성] ${prompt}`,
-        tokens_used: 0,
-        created_at: new Date().toISOString(),
-      }
-      setMessages((prev) => [...prev, userMessage])
-
-      sendGenerate(prompt, purpose, style)
-    },
-    [sessionId, purpose, style, sendGenerate]
-  )
-
-  // 이미지 개선
-  const handleRefine = useCallback(
-    (feedback: string) => {
-      // 사용자 메시지 추가
-      const userMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        session_id: sessionId!,
-        role: 'user',
-        content_type: 'text',
-        text_content: `[이미지 개선] ${feedback}`,
-        tokens_used: 0,
-        created_at: new Date().toISOString(),
-      }
-      setMessages((prev) => [...prev, userMessage])
-
-      sendRefine(feedback, purpose)
-    },
-    [sessionId, purpose, sendRefine]
-  )
-
-  const hasGeneratedImage = messages.some((m) => m.image_url)
 
   if (isLoading) {
     return (
@@ -242,12 +217,14 @@ export default function ChatPage() {
               <div className="text-center py-16 text-gray-400">
                 <p className="text-5xl mb-4">🎨</p>
                 <p className="text-lg font-medium mb-2">TRDST 이미지 생성</p>
-                <p className="text-sm">
-                  하이엔드 가구/조명 마케팅 이미지를 AI로 생성해보세요.
+                <p className="text-sm mb-4">
+                  자연스럽게 대화하며 마케팅 이미지를 만들어보세요.
                 </p>
-                <p className="text-xs mt-4 text-gray-500">
-                  왼쪽에서 용도와 스타일을 선택한 후, 원하는 이미지를 설명해주세요.
-                </p>
+                <div className="text-xs text-gray-500 space-y-1">
+                  <p>💡 "인스타그램용 조명 이미지를 만들고 싶어"</p>
+                  <p>💡 "고급스러운 소파 사진이 필요해"</p>
+                  <p>💡 "페이스북 배너에 쓸 거실 이미지 만들어줘"</p>
+                </div>
               </div>
             ) : (
               messages.map((message) => (
@@ -271,12 +248,9 @@ export default function ChatPage() {
         {/* 입력 영역 */}
         <div className="bg-gray-800 rounded-xl mt-3">
           <ChatInput
-            onSendChat={handleSendChat}
-            onGenerate={handleGenerate}
-            onRefine={handleRefine}
+            onSend={handleSend}
             isLoading={wsLoading}
             isConnected={isConnected}
-            hasGeneratedImage={hasGeneratedImage}
           />
         </div>
       </div>

@@ -104,7 +104,7 @@ export interface SessionListResponse {
 
 // WebSocket 메시지
 export interface WebSocketMessage {
-  type: 'chat' | 'generate' | 'refine'
+  type: 'chat' | 'generate' | 'refine' | 'converse'
   content: string
   data?: {
     purpose?: ImagePurpose
@@ -114,7 +114,7 @@ export interface WebSocketMessage {
 
 // WebSocket 응답
 export interface WebSocketResponse {
-  type: 'message' | 'image' | 'status' | 'error'
+  type: 'message' | 'image' | 'mixed' | 'status' | 'error'
   content?: string
   image_url?: string
   data?: Record<string, unknown>

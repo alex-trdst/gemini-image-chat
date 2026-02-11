@@ -6,9 +6,12 @@ WebSocket Routes
 """
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
@@ -108,10 +111,11 @@ async def image_chat_websocket(
 
     # Shopify 서비스 초기화
     shopify_service = None
-    if settings.shopify_store_url and settings.shopify_access_token:
+    if settings.shopify_store_url and settings.shopify_client_id and settings.shopify_client_secret:
         shopify_service = ShopifyFilesService(
             store_url=settings.shopify_store_url,
-            access_token=settings.shopify_access_token,
+            client_id=settings.shopify_client_id,
+            client_secret=settings.shopify_client_secret,
         )
 
     try:
@@ -158,11 +162,12 @@ async def image_chat_websocket(
 
             try:
                 async with AsyncSessionLocal() as db:
-                    if msg_type == "chat":
-                        # 텍스트 대화
+                    # 통합 대화 모드 (converse) - 기본값
+                    # 기존 chat/generate/refine도 호환성 유지
+                    if msg_type in ("converse", "chat", "generate", "refine"):
                         await websocket.send_json({
                             "type": "status",
-                            "content": "응답 생성 중...",
+                            "content": "생각 중...",
                             "timestamp": datetime.utcnow().isoformat(),
                         })
 
@@ -175,237 +180,123 @@ async def image_chat_websocket(
                             text_content=content,
                         )
 
-                        response = await gemini_service.chat(
+                        # 이전 이미지 URL 조회 (이미지 수정 컨텍스트용)
+                        previous_image_url = None
+                        previous_image_result = await db.execute(
+                            select(ImageChatMessage)
+                            .where(ImageChatMessage.session_id == session_id)
+                            .where(ImageChatMessage.content_type == ContentType.IMAGE.value)
+                            .order_by(ImageChatMessage.created_at.desc())
+                            .limit(1)
+                        )
+                        previous_image_msg = previous_image_result.scalar_one_or_none()
+                        if previous_image_msg:
+                            previous_image_url = previous_image_msg.image_url
+
+                        # 통합 대화 API 호출
+                        response = await gemini_service.converse(
                             session_id=session_id,
                             message=content,
                             purpose=purpose,
-                            generate_image=False,
                             style=style,
+                            previous_image_url=previous_image_url,
                         )
 
-                        # 어시스턴트 응답 저장
-                        await save_message(
-                            db=db,
-                            session_id=session_id,
-                            role=MessageRole.ASSISTANT,
-                            content_type=ContentType.TEXT,
-                            text_content=response.text,
-                            generation_time_ms=response.generation_time_ms,
-                        )
+                        # 이미지가 생성된 경우
+                        image_url = None
+                        if response.image:
+                            if not shopify_service:
+                                raise ValueError("Shopify 서비스가 설정되지 않았습니다.")
 
-                        # 세션 카운트 업데이트
-                        await update_session_counts(db, session_id, messages_added=2)
-
-                        await websocket.send_json({
-                            "type": "message",
-                            "content": response.text,
-                            "data": {
-                                "generation_time_ms": response.generation_time_ms,
-                            },
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-
-                    elif msg_type == "generate":
-                        # 이미지 생성
-                        await websocket.send_json({
-                            "type": "status",
-                            "content": "이미지 생성 중...",
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-
-                        # 사용자 메시지 저장
-                        await save_message(
-                            db=db,
-                            session_id=session_id,
-                            role=MessageRole.USER,
-                            content_type=ContentType.TEXT,
-                            text_content=f"[이미지 생성] {content}",
-                        )
-
-                        generated = await gemini_service.generate_image(
-                            prompt=content,
-                            purpose=purpose,
-                            style=style,
-                            session_id=session_id,
-                        )
-
-                        # Shopify에 업로드하거나 base64 사용
-                        if shopify_service:
                             await websocket.send_json({
                                 "type": "status",
                                 "content": "이미지 저장 중...",
                                 "timestamp": datetime.utcnow().isoformat(),
                             })
 
-                            try:
-                                uploaded = await shopify_service.upload_base64_image(
-                                    base64_data=generated.image_base64,
-                                    filename=f"trdst-{session_id[:8]}-{uuid.uuid4().hex[:8]}.png",
-                                    mime_type=generated.mime_type,
-                                    alt=f"TRDST 마케팅 이미지: {content[:50]}",
-                                )
-                                image_url = uploaded.url
-                            except Exception as e:
-                                # Shopify 업로드 실패 시 base64 사용
-                                print(f"Shopify 업로드 실패: {e}")
-                                image_url = f"data:{generated.mime_type};base64,{generated.image_base64}"
-                        else:
-                            image_url = f"data:{generated.mime_type};base64,{generated.image_base64}"
+                            uploaded = await shopify_service.upload_base64_image(
+                                base64_data=response.image.image_base64,
+                                filename=f"trdst-{session_id[:8]}-{uuid.uuid4().hex[:8]}.png",
+                                mime_type=response.image.mime_type,
+                                alt=f"TRDST 마케팅 이미지: {content[:50]}",
+                            )
+                            image_url = uploaded.url
 
-                        # 어시스턴트 응답 저장
-                        assistant_msg = await save_message(
-                            db=db,
-                            session_id=session_id,
-                            role=MessageRole.ASSISTANT,
-                            content_type=ContentType.IMAGE,
-                            text_content="이미지가 생성되었습니다.",
-                            image_url=image_url,
-                            generation_time_ms=generated.generation_time_ms,
-                            generation_metadata={
-                                "prompt_used": generated.prompt_used,
-                                "model_used": generated.model_used,
-                                "width": generated.width,
-                                "height": generated.height,
-                            },
-                        )
+                            # 이미지 레코드 저장
+                            assistant_msg = await save_message(
+                                db=db,
+                                session_id=session_id,
+                                role=MessageRole.ASSISTANT,
+                                content_type=ContentType.IMAGE,
+                                text_content=response.text,
+                                image_url=image_url,
+                                generation_time_ms=response.generation_time_ms,
+                                generation_metadata={
+                                    "prompt_used": response.image.prompt_used,
+                                    "model_used": response.image.model_used,
+                                    "width": response.image.width,
+                                    "height": response.image.height,
+                                },
+                            )
 
-                        # 이미지 레코드 저장
-                        image_record = GeneratedMarketingImage(
-                            id=str(uuid.uuid4()),
-                            session_id=session_id,
-                            message_id=assistant_msg.id,
-                            image_url=image_url,
-                            width=generated.width,
-                            height=generated.height,
-                            format=generated.mime_type.split("/")[-1] if "/" in generated.mime_type else "png",
-                            prompt_used=generated.prompt_used,
-                            model_used=generated.model_used,
-                            image_purpose=purpose.value,
-                        )
-                        db.add(image_record)
-                        await db.commit()
+                            image_record = GeneratedMarketingImage(
+                                id=str(uuid.uuid4()),
+                                session_id=session_id,
+                                message_id=assistant_msg.id,
+                                image_url=image_url,
+                                width=response.image.width,
+                                height=response.image.height,
+                                format=response.image.mime_type.split("/")[-1] if "/" in response.image.mime_type else "png",
+                                prompt_used=response.image.prompt_used,
+                                model_used=response.image.model_used,
+                                image_purpose=purpose.value,
+                            )
+                            db.add(image_record)
+                            await db.commit()
 
-                        # 세션 카운트 업데이트
-                        await update_session_counts(
-                            db, session_id,
-                            messages_added=2,
-                            images_added=1,
-                            final_image_url=image_url,
-                        )
+                            # 세션 카운트 업데이트
+                            await update_session_counts(
+                                db, session_id,
+                                messages_added=2,
+                                images_added=1,
+                                final_image_url=image_url,
+                            )
 
-                        await websocket.send_json({
-                            "type": "image",
-                            "content": "이미지가 생성되었습니다.",
-                            "image_url": image_url,
-                            "data": {
-                                "prompt_used": generated.prompt_used,
-                                "model_used": generated.model_used,
-                                "width": generated.width,
-                                "height": generated.height,
-                                "generation_time_ms": generated.generation_time_ms,
-                            },
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-
-                    elif msg_type == "refine":
-                        # 이미지 개선
-                        await websocket.send_json({
-                            "type": "status",
-                            "content": "이미지 개선 중...",
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-
-                        # 사용자 메시지 저장
-                        await save_message(
-                            db=db,
-                            session_id=session_id,
-                            role=MessageRole.USER,
-                            content_type=ContentType.TEXT,
-                            text_content=f"[이미지 개선] {content}",
-                        )
-
-                        generated = await gemini_service.refine_image(
-                            session_id=session_id,
-                            feedback=content,
-                            purpose=purpose,
-                        )
-
-                        # Shopify에 업로드하거나 base64 사용
-                        if shopify_service:
+                            # 혼합 응답 (텍스트 + 이미지)
                             await websocket.send_json({
-                                "type": "status",
-                                "content": "이미지 저장 중...",
+                                "type": "mixed",
+                                "content": response.text,
+                                "image_url": image_url,
+                                "data": {
+                                    "prompt_used": response.image.prompt_used,
+                                    "model_used": response.image.model_used,
+                                    "width": response.image.width,
+                                    "height": response.image.height,
+                                    "generation_time_ms": response.generation_time_ms,
+                                },
                                 "timestamp": datetime.utcnow().isoformat(),
                             })
-
-                            try:
-                                uploaded = await shopify_service.upload_base64_image(
-                                    base64_data=generated.image_base64,
-                                    filename=f"trdst-{session_id[:8]}-{uuid.uuid4().hex[:8]}.png",
-                                    mime_type=generated.mime_type,
-                                    alt=f"TRDST 마케팅 이미지 (개선): {content[:50]}",
-                                )
-                                image_url = uploaded.url
-                            except Exception as e:
-                                print(f"Shopify 업로드 실패: {e}")
-                                image_url = f"data:{generated.mime_type};base64,{generated.image_base64}"
                         else:
-                            image_url = f"data:{generated.mime_type};base64,{generated.image_base64}"
+                            # 텍스트만 응답
+                            await save_message(
+                                db=db,
+                                session_id=session_id,
+                                role=MessageRole.ASSISTANT,
+                                content_type=ContentType.TEXT,
+                                text_content=response.text,
+                                generation_time_ms=response.generation_time_ms,
+                            )
 
-                        # 어시스턴트 응답 저장
-                        assistant_msg = await save_message(
-                            db=db,
-                            session_id=session_id,
-                            role=MessageRole.ASSISTANT,
-                            content_type=ContentType.IMAGE,
-                            text_content="이미지가 개선되었습니다.",
-                            image_url=image_url,
-                            generation_time_ms=generated.generation_time_ms,
-                            generation_metadata={
-                                "prompt_used": generated.prompt_used,
-                                "model_used": generated.model_used,
-                                "width": generated.width,
-                                "height": generated.height,
-                            },
-                        )
+                            await update_session_counts(db, session_id, messages_added=2)
 
-                        # 이미지 레코드 저장
-                        image_record = GeneratedMarketingImage(
-                            id=str(uuid.uuid4()),
-                            session_id=session_id,
-                            message_id=assistant_msg.id,
-                            image_url=image_url,
-                            width=generated.width,
-                            height=generated.height,
-                            format=generated.mime_type.split("/")[-1] if "/" in generated.mime_type else "png",
-                            prompt_used=generated.prompt_used,
-                            model_used=generated.model_used,
-                            image_purpose=purpose.value,
-                        )
-                        db.add(image_record)
-                        await db.commit()
-
-                        # 세션 카운트 업데이트
-                        await update_session_counts(
-                            db, session_id,
-                            messages_added=2,
-                            images_added=1,
-                            final_image_url=image_url,
-                        )
-
-                        await websocket.send_json({
-                            "type": "image",
-                            "content": "이미지가 개선되었습니다.",
-                            "image_url": image_url,
-                            "data": {
-                                "prompt_used": generated.prompt_used,
-                                "model_used": generated.model_used,
-                                "width": generated.width,
-                                "height": generated.height,
-                                "generation_time_ms": generated.generation_time_ms,
-                            },
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
+                            await websocket.send_json({
+                                "type": "message",
+                                "content": response.text,
+                                "data": {
+                                    "generation_time_ms": response.generation_time_ms,
+                                },
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
 
                     else:
                         await websocket.send_json({
@@ -415,6 +306,7 @@ async def image_chat_websocket(
                         })
 
             except Exception as e:
+                logger.error(f"WebSocket 처리 오류: {e}", exc_info=True)
                 await websocket.send_json({
                     "type": "error",
                     "content": f"오류 발생: {str(e)}",

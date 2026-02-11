@@ -33,7 +33,8 @@ class Settings(BaseSettings):
 
     # Shopify (for image file storage)
     shopify_store_url: str = ""
-    shopify_access_token: str = ""
+    shopify_client_id: str = ""
+    shopify_client_secret: str = ""
 
 
 @lru_cache

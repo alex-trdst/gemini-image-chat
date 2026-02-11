@@ -55,10 +55,14 @@ export function useImageChatWebSocket({
 
         // 상태 업데이트
         if (response.type === 'status') {
-          if (response.content?.includes('생성 중') || response.content?.includes('개선 중')) {
+          // 진행 상태 - 로딩 유지
+          if (response.content?.includes('생각 중') ||
+              response.content?.includes('생성 중') ||
+              response.content?.includes('저장 중')) {
             setIsLoading(true)
           }
         } else {
+          // 완료된 응답
           setIsLoading(false)
         }
 
@@ -131,6 +135,23 @@ export function useImageChatWebSocket({
     []
   )
 
+  // 통합 대화 - AI가 자동으로 텍스트/이미지 결정
+  const sendConverse = useCallback(
+    (content: string, purpose: ImagePurpose, style?: StylePreset) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+
+      setIsLoading(true)
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'converse',
+          content,
+          data: { purpose, style },
+        })
+      )
+    },
+    []
+  )
+
   // 컴포넌트 마운트 시 연결
   useEffect(() => {
     connect()
@@ -143,6 +164,7 @@ export function useImageChatWebSocket({
     sendChat,
     sendGenerate,
     sendRefine,
+    sendConverse,
     connect,
     disconnect,
   }
